@@ -1,4 +1,4 @@
-        AREA    |.text|, CODE, READONLY
+AREA    |.text|, CODE, READONLY
         THUMB
         EXPORT  __main
         EXPORT  Total_IT
@@ -17,29 +17,24 @@ SCORE_ADDR      EQU 0x20006000      ; performance scores base
 EMP_SIZE        EQU 64
 NUM_EMPS        EQU 5
 
-; ---------------- Employee structure layout (Option A) -------------------
+; ---------------- Employee structure layout -------------------
 ; Offset  Field
 ; 0x00    Employee ID (word)
 ; 0x04    Name pointer (word)
 ; 0x08    Base salary (word)
 ; 0x0C    Grade (byte)
 ; 0x0D    Dept  (byte)
-; 0x0E    pad
-; 0x0F    pad
 ; 0x10    Bank Account (word)
 ; 0x14    Attendance pointer (word)
 ; 0x18    Allowance table pointer (word)
 ; 0x1C    Present days (byte)
 ; 0x1D    Flags (byte: bit0=LDEFICIT, bit1=OVERFLOW)
-; 0x1E    pad
-; 0x1F    pad
 ; 0x20    Deduction (word)
 ; 0x24    OT pay (word)
 ; 0x28    Allowance (word)
 ; 0x2C    Bonus (word)
 ; 0x30    Tax (word)
 ; 0x34    Net Salary (word)
-; 0x38..0x3F unused (kept for alignment)
 ; ------------------------------------------------------------------------
 
 OFF_ID          EQU 0
@@ -97,20 +92,20 @@ Main_Process_Loop
         BL      Mod3_LeaveDeduction
         BL      Mod4_OTCalculation
         BL      Mod5_Allowance
-        BL      Mod10_Bonus
         BL      Mod6_TaxCalc
         BL      Mod7_NetSalary
+		BL      Mod10_Bonus
 
         ADD     R5, R5, #EMP_SIZE       ; move to next employee struct
         ADDS    R4, R4, #1              ; increment employee index
         B       Main_Process_Loop
 
 Main_AfterLoop
+		; Sort by net salary and store sorted list at 0x20005000
+        BL      Mod8_SortEmployees
+		
         ; Departmental summary (from base table)
         BL      Mod9_DeptSummary
-
-        ; Sort by net salary and store sorted list at 0x20005000
-        BL      Mod8_SortEmployees
 
         ; UART payslip output (demo: employee 0)
         ;BL      Mod11_GeneratePayslip
@@ -482,54 +477,6 @@ Trans_Done
         POP     {R4-R7,PC}
 
 ; ------------------------------------------------------------------------
-; MODULE 10 – Bonus engine
-; Scores at 0x20006000
-; >=90: 25%, 75-89: 15%, 60-74: 8%, else 0
-; ------------------------------------------------------------------------
-Mod10_Bonus
-        PUSH    {R4-R7,LR}
-
-        LDR     R6, =SCORE_ADDR
-        ADD     R6, R6, R4              ; R4 = index
-        LDRB    R0, [R6]                ; score
-        LDR     R1, [R5, #OFF_BASE]     ; base
-        MOVS    R2, #0                  ; bonus
-
-        CMP     R0, #90
-        BGE     B25
-        CMP     R0, #75
-        BGE     B15
-        CMP     R0, #60
-        BGE     B8
-        B       Bstore
-
-B25
-        MOVS    R3, #25
-        B       Bcalc
-B15
-        MOVS    R3, #15
-        B       Bcalc
-B8
-        MOVS    R3, #8
-Bcalc
-        MUL     R2, R1, R3
-        MOVS    R4, #100
-        MOVS    R7, #0
-BdivLoop
-        CMP     R2, R4
-        BLT     BdivDone
-        SUBS    R2, R2, R4
-        ADDS    R7, R7, #1
-        B       BdivLoop
-BdivDone
-        MOV     R2, R7
-
-Bstore
-        STR     R2, [R5, #OFF_BONUS]
-
-        POP     {R4-R7,PC}
-
-; ------------------------------------------------------------------------
 ; MODULE 6 – Tax computation (slabs)
 ; gross = base + allow + ot + bonus - deduction
 ; ------------------------------------------------------------------------
@@ -540,8 +487,6 @@ Mod6_TaxCalc
         LDR     R1, [R5, #OFF_ALLOW]
         ADDS    R0, R0, R1
         LDR     R1, [R5, #OFF_OT]
-        ADDS    R0, R0, R1
-        LDR     R1, [R5, #OFF_BONUS]
         ADDS    R0, R0, R1
         LDR     R1, [R5, #OFF_DED]
         SUBS    R0, R0, R1              ; R0 = gross
@@ -609,8 +554,6 @@ M7_NoOF1
         BVC     M7_NoOF2
         ORR     R4, R4, #FLAG_OVERFLOW
 M7_NoOF2
-        LDR     R1, [R5, #OFF_BONUS]
-        ADDS    R0, R0, R1
         BVC     M7_NoOF3
         ORR     R4, R4, #FLAG_OVERFLOW
 M7_NoOF3
@@ -627,6 +570,54 @@ M7_NoOF5
 
         STR     R0, [R5, #OFF_NET]
         STRB    R4, [R5, #OFF_FLAGS]
+
+        POP     {R4-R7,PC}
+		
+; ------------------------------------------------------------------------
+; MODULE 10 – Bonus engine
+; Scores at 0x20006000
+; >=90: 25%, 75-89: 15%, 60-74: 8%, else 0
+; ------------------------------------------------------------------------
+Mod10_Bonus
+        PUSH    {R4-R7,LR}
+
+        LDR     R6, =SCORE_ADDR
+        ADD     R6, R6, R4              ; R4 = index
+        LDRB    R0, [R6]                ; score
+        LDR     R1, [R5, #OFF_BASE]     ; base
+        MOVS    R2, #0                  ; bonus
+
+        CMP     R0, #90
+        BGE     B25
+        CMP     R0, #75
+        BGE     B15
+        CMP     R0, #60
+        BGE     B8
+        B       Bstore
+
+B25
+        MOVS    R3, #25
+        B       Bcalc
+B15
+        MOVS    R3, #15
+        B       Bcalc
+B8
+        MOVS    R3, #8
+Bcalc
+        MUL     R2, R1, R3
+        MOVS    R4, #100
+        MOVS    R7, #0
+BdivLoop
+        CMP     R2, R4
+        BLT     BdivDone
+        SUBS    R2, R2, R4
+        ADDS    R7, R7, #1
+        B       BdivLoop
+BdivDone
+        MOV     R2, R7
+
+Bstore
+        STR     R2, [R5, #OFF_BONUS]
 
         POP     {R4-R7,PC}
 
