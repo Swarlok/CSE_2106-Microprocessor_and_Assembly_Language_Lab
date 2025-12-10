@@ -1,9 +1,10 @@
-AREA    |.text|, CODE, READONLY
+        AREA    |.text|, CODE, READONLY
         THUMB
         EXPORT  __main
         EXPORT  Total_IT
         EXPORT  Total_HR
         EXPORT  Total_Admin
+		EXPORT	TX_Buffer
 
 ; ------------------------------------------------------------------------
 ; CONSTANTS / SIZES
@@ -108,7 +109,7 @@ Main_AfterLoop
         BL      Mod9_DeptSummary
 
         ; UART payslip output (demo: employee 0)
-        ;BL      Mod11_GeneratePayslip
+        BL      Mod11_GeneratePayslip
 
 StopHere
         B       StopHere
@@ -407,28 +408,31 @@ EndDed3
 
 ; ------------------------------------------------------------------------
 ; MODULE 4 – Overtime Calculation (OT hours at 0x20002000)
+; Uses grade-based lookup table OT_RateTable
+; grade: 0 = A, 1 = B, 2 = C
+; ot_pay = ot_hours * rate
 ; ------------------------------------------------------------------------
 Mod4_OTCalculation
         PUSH    {R4-R7,LR}
 
-        ; R4 = index (kept from main)
+        ; R4 = employee index (from main)
+        ; Load OT hours: one byte per employee at OT_LOG_ADDR + index
         LDR     R6, =OT_LOG_ADDR
-        ADD     R6, R6, R4              ; one byte per employee
-        LDRB    R0, [R6]                ; OT hours
+        ADD     R6, R6, R4              ; address of this employee's OT hour
+        LDRB    R0, [R6]                ; R0 = ot_hours
 
-        LDRB    R1, [R5, #OFF_GRADE]    ; grade
-        CMP     R1, #0
-        BEQ     OT_gradeA
-        CMP     R1, #1
-        BEQ     OT_gradeB
-        MOVS    R2, #150                ; Grade C
-        B       OT_rate_done
-OT_gradeA
-        MOVS    R2, #250
-        B       OT_rate_done
-OT_gradeB
-        MOVS    R2, #200
-OT_rate_done
+        ; Load grade and use it as index into OT_RateTable
+        LDRB    R1, [R5, #OFF_GRADE]    ; 0=A, 1=B, 2=C
+
+        ; Simple guard: if grade > 2, clamp to grade C (index 2)
+        CMP     R1, #2
+        BLS     M4_IndexOK
+        MOVS    R1, #2
+M4_IndexOK
+        LDR     R2, =OT_RateTable       ; base of rate table
+        LDRB    R2, [R2, R1]            ; R2 = rate corresponding to grade
+
+        ; ot_pay = ot_hours * rate
         MUL     R3, R0, R2
         STR     R3, [R5, #OFF_OT]
 
@@ -479,10 +483,17 @@ Trans_Done
 ; ------------------------------------------------------------------------
 ; MODULE 6 – Tax computation (slabs)
 ; gross = base + allow + ot + bonus - deduction
+; Slabs:
+;   = 30000              : 0%
+;   30001 – 60000        : 5%
+;   60001 – 120000       : 10%
+;   > 120000             : 15%
+; Uses CMP + BLE, BHI, BGE
 ; ------------------------------------------------------------------------
 Mod6_TaxCalc
         PUSH    {R4-R7,LR}
 
+        ; ---- Compute gross salary in R0 --------------------------------
         LDR     R0, [R5, #OFF_BASE]
         LDR     R1, [R5, #OFF_ALLOW]
         ADDS    R0, R0, R1
@@ -491,31 +502,55 @@ Mod6_TaxCalc
         LDR     R1, [R5, #OFF_DED]
         SUBS    R0, R0, R1              ; R0 = gross
 
-        MOVS    R2, #0                  ; tax default 0
+        ; ---------------------------------------------------------------
+        ; Decide tax rate (percentage) in R4 using BLE, BHI, BGE.
+        ; ---------------------------------------------------------------
 
+        ; If gross = 30000  ? 0%
         LDR     R3, =30000
         CMP     R0, R3
-        BLE     TaxStore6
+        BLE     Tax0_rate               ; uses BLE
 
-        LDR     R3, =60000
-        CMP     R0, R3
-        BLE     Tax5
+        ; Now we know gross > 30000
 
+        ; If gross > 120000 ? 15%
         LDR     R3, =120000
         CMP     R0, R3
-        BLE     Tax10
+        BHI     Tax15_rate              ; uses BHI
 
-        MOVS    R4, #15
+        ; Now gross is in (30000 .. 120000]
+
+        ; If gross = 60001 ? 10%   (i.e. 60001–120000)
+        LDR     R3, =60001
+        CMP     R0, R3
+        BGE     Tax10_rate              ; uses BGE
+
+        ; Remaining case (30001–60000) ? 5%
+        B       Tax5_rate
+
+Tax0_rate
+        MOVS    R4, #0
         B       TaxCompute6
-Tax5
+
+Tax5_rate
         MOVS    R4, #5
         B       TaxCompute6
-Tax10
+
+Tax10_rate
         MOVS    R4, #10
         B       TaxCompute6
 
+Tax15_rate
+        MOVS    R4, #15
+        B       TaxCompute6
+
+; ------------------------------------------------------------------------
+; TaxCompute6: R0 = gross, R4 = rate (0/5/10/15)
+; Computes tax = (gross * rate) / 100 using repeated subtraction.
+; Result in R2.
+; ------------------------------------------------------------------------
 TaxCompute6
-        MUL     R2, R0, R4
+        MUL     R2, R0, R4              ; R2 = gross * rate
         MOVS    R6, #100
         MOVS    R7, #0
 TC_Loop
@@ -525,15 +560,14 @@ TC_Loop
         ADDS    R7, R7, #1
         B       TC_Loop
 TC_Done
-        MOV     R2, R7
+        MOV     R2, R7                  ; R2 = tax
 
-TaxStore6
         STR     R2, [R5, #OFF_TAX]
         POP     {R4-R7,PC}
 
 ; ------------------------------------------------------------------------
 ; MODULE 7 – Net salary (with OVERFLOW_FLAG)
-; net = base + allow + ot + bonus - tax - deduction
+; net = base + allow + ot - tax - deduction
 ; ------------------------------------------------------------------------
 Mod7_NetSalary
         PUSH    {R4-R7,LR}
@@ -743,35 +777,74 @@ SumDone9
         POP     {R4-R7,PC}
 
 ; ------------------------------------------------------------------------
-; UART helper: send one character (R0)
+; UART helper (original): send one character (R0)
+; ------------------------------------------------------------------------
+;UART_SendChar
+;        PUSH    {R1,LR}
+;WaitTX
+;        LDR     R1, =UART0_FR
+;        LDR     R1, [R1]
+;        TST     R1, #UART_TXFF_BIT      ; TXFF == 1 => FIFO full
+;        BNE     WaitTX
+;        LDR     R1, =UART0_DR
+;        STR     R0, [R1]
+;        POP     {R1,PC}
+
+; ------------------------------------------------------------------------
+; UART helper: send one character (R0) – DEBUG version: log to RAM buffer
 ; ------------------------------------------------------------------------
 UART_SendChar
-        PUSH    {R1,LR}
-WaitTX
-        LDR     R1, =UART0_FR
-        LDR     R1, [R1]
-        TST     R1, #UART_TXFF_BIT      ; TXFF == 1 => FIFO full
-        BNE     WaitTX
-        LDR     R1, =UART0_DR
-        STR     R0, [R1]
-        POP     {R1,PC}
+        PUSH    {R1-R3,LR}
+
+        ; Load current index
+        LDR     R1, =TX_Index
+        LDR     R2, [R1]              ; R2 = index
+
+        ; Bound check (optional: simple clamp at end)
+        LDR     R3, =TX_BUF_SIZE
+        CMP     R2, R3
+        BHS     USC_Full              ; if index >= size, just ignore extra
+
+        ; TX_Buffer[index] = R0 (byte)
+        LDR     R3, =TX_Buffer
+        ADD     R3, R3, R2
+        STRB    R0, [R3]
+
+        ; index++
+        ADDS    R2, R2, #1
+        LDR     R1, =TX_Index
+        STR     R2, [R1]
+
+USC_Full
+        POP     {R1-R3,PC}
 
 ; ------------------------------------------------------------------------
 ; UART helper: send zero-terminated string (R0 = pointer)
 ; ------------------------------------------------------------------------
 UART_SendString
         PUSH    {R1-R2,LR}
+        MOV     R2, R0              ; R2 = current pointer
 USS_Loop
-        LDRB    R1, [R0]
-        CMP     R1, #0
+        LDRB    R1, [R2]            ; load byte from string
+        CMP     R1, #0              ; zero terminator?
         BEQ     USS_Done
-        MOV     R2, R1
-        MOV     R0, R2
-        BL      UART_SendChar
-        ADDS    R0, R0, #1
+        MOV     R0, R1              ; character -> R0
+        BL      UART_SendChar       ; send char
+        ADDS    R2, R2, #1          ; pointer++
         B       USS_Loop
 USS_Done
         POP     {R1-R2,PC}
+		
+; ------------------------------------------------------------------------
+; UART_SendCRLF – sends "\r\n"
+; ------------------------------------------------------------------------
+UART_SendCRLF
+        PUSH    {R0,LR}
+        MOVS    R0, #13        ; '\r'
+        BL      UART_SendChar
+        MOVS    R0, #10        ; '\n'
+        BL      UART_SendChar
+        POP     {R0,PC}
 
 ; ------------------------------------------------------------------------
 ; Print unsigned int in R0 as decimal using recursion + UDIV
@@ -801,18 +874,39 @@ PN_Base
 
 ; ------------------------------------------------------------------------
 ; MODULE 11 – UART payslip generator
-; Prints for employee 0:
-;  ID, Net, Tax, Allow, Bonus, Final Pay (= Net + Bonus), each in decimal
+; Prints payslip for ALL employees (0..NUM_EMPS-1):
+; ID, Net, Tax, Allow, Bonus, Final Pay (= Net + Bonus), each in decimal
 ; ------------------------------------------------------------------------
 Mod11_GeneratePayslip
-        PUSH    {R4-R7,LR}
+        PUSH    {R4-R8,LR}
 
-        LDR     R4, =EMP_BASE_ADDR     ; employee 0 struct
+        LDR     R5, =EMP_BASE_ADDR     ; base of employee table
+        MOVS    R4, #0                 ; employee index = 0
+
+Payslip_Loop
+        CMP     R4, #NUM_EMPS
+        BGE     Payslip_Done           ; finished all employees
+
+        ; -------------------------------------------------------------
+        ; Compute pointer to this employee's struct:
+        ;   empPtr = EMP_BASE_ADDR + index * EMP_SIZE
+        ; EMP_SIZE = 64 => multiply index by 64 using << 6
+        ; -------------------------------------------------------------
+        MOV     R6, R4
+        LSLS    R6, R6, #6             ; R6 = index * 64
+        ADD     R6, R5, R6             ; R6 = &employee[index]
+
+        ; Optional separator line between employees (skip before first)
+        CMP     R4, #0
+        BEQ     Skip_Separator
+        LDR     R0, =Str_Sep
+        BL      UART_SendString
+Skip_Separator
 
         ; -------- Print "ID: " + EmployeeID --------
         LDR     R0, =Str_ID
         BL      UART_SendString
-        LDR     R0, [R4, #OFF_ID]
+        LDR     R0, [R6, #OFF_ID]
         BL      PrintNumber
         MOVS    R0, #13               ; '\r'
         BL      UART_SendChar
@@ -822,7 +916,7 @@ Mod11_GeneratePayslip
         ; -------- Net Salary --------
         LDR     R0, =Str_Net
         BL      UART_SendString
-        LDR     R0, [R4, #OFF_NET]
+        LDR     R0, [R6, #OFF_NET]
         BL      PrintNumber
         MOVS    R0, #13
         BL      UART_SendChar
@@ -832,7 +926,7 @@ Mod11_GeneratePayslip
         ; -------- Tax --------
         LDR     R0, =Str_Tax
         BL      UART_SendString
-        LDR     R0, [R4, #OFF_TAX]
+        LDR     R0, [R6, #OFF_TAX]
         BL      PrintNumber
         MOVS    R0, #13
         BL      UART_SendChar
@@ -842,7 +936,7 @@ Mod11_GeneratePayslip
         ; -------- Allowance --------
         LDR     R0, =Str_Allow
         BL      UART_SendString
-        LDR     R0, [R4, #OFF_ALLOW]
+        LDR     R0, [R6, #OFF_ALLOW]
         BL      PrintNumber
         MOVS    R0, #13
         BL      UART_SendChar
@@ -852,7 +946,7 @@ Mod11_GeneratePayslip
         ; -------- Bonus --------
         LDR     R0, =Str_Bonus
         BL      UART_SendString
-        LDR     R0, [R4, #OFF_BONUS]
+        LDR     R0, [R6, #OFF_BONUS]
         BL      PrintNumber
         MOVS    R0, #13
         BL      UART_SendChar
@@ -862,8 +956,8 @@ Mod11_GeneratePayslip
         ; -------- Final Pay = Net + Bonus --------
         LDR     R0, =Str_Final
         BL      UART_SendString
-        LDR     R1, [R4, #OFF_NET]
-        LDR     R2, [R4, #OFF_BONUS]
+        LDR     R1, [R6, #OFF_NET]
+        LDR     R2, [R6, #OFF_BONUS]
         ADDS    R0, R1, R2
         BL      PrintNumber
         MOVS    R0, #13
@@ -871,7 +965,18 @@ Mod11_GeneratePayslip
         MOVS    R0, #10
         BL      UART_SendChar
 
-        POP     {R4-R7,PC}
+        ; Blank line after each employee (for readability)
+        MOVS    R0, #13
+        BL      UART_SendChar
+        MOVS    R0, #10
+        BL      UART_SendChar
+
+        ; Next employee
+        ADDS    R4, R4, #1
+        B       Payslip_Loop
+
+Payslip_Done
+        POP     {R4-R8,PC}
 
 ; ------------------------------------------------------------------------
 ; READONLY DATA (ROM)
@@ -907,6 +1012,10 @@ ATT_TABLE_ROM
         DCB 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
         DCB 0
 
+; OT rate lookup table by grade: index 0=A, 1=B, 2=C
+OT_RateTable
+        DCB     250,200,150
+		
 ; OT hours (ROM)
 OT_TABLE_ROM
         DCB     2,0,5,1,3
@@ -922,6 +1031,7 @@ Str_Tax         DCB "Tax: ",0
 Str_Allow       DCB "Allowance: ",0
 Str_Bonus       DCB "Bonus: ",0
 Str_Final       DCB "Final Pay: ",0
+Str_Sep         DCB "------------------------------",13,10,0
 
 ; ------------------------------------------------------------------------
 ; READWRITE DATA
@@ -932,5 +1042,11 @@ Str_Final       DCB "Final Pay: ",0
 Total_IT        DCD     0
 Total_HR        DCD     0
 Total_Admin     DCD     0
+	
+; ---------------- UART debug buffer ----------------
+TX_BUF_SIZE     EQU     1024           
+
+TX_Buffer       SPACE   TX_BUF_SIZE   ; raw bytes of UART output
+TX_Index        DCD     0             ; current write index
 
         END
