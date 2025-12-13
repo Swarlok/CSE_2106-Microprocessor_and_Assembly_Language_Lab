@@ -6,9 +6,8 @@
         EXPORT  Total_Admin
 		EXPORT	TX_Buffer
 
-; ------------------------------------------------------------------------
 ; CONSTANTS / SIZES
-; ------------------------------------------------------------------------
+
 EMP_BASE_ADDR   EQU 0x20000000
 ATT_LOG_ADDR    EQU 0x20001000      ; Emp i attendance: 0x20001000 + i*0x100
 OT_LOG_ADDR     EQU 0x20002000      ; OT hours table base
