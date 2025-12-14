@@ -29,7 +29,7 @@ NUM_EMPS        EQU 5
 ;0x14    Attendance pointer(word)
 ;0x18    Allowance table pointer(word)
 ;0x1C    Present days(byte)
-;0x1D    Flags(byte: bit0=LDEFICIT, bit1=OVERFLOW)
+;0x1D    Flags(byte: bit 0=LDEFICIT, bit 1=OVERFLOW)
 ;0x20    Deduction(word)
 ;0x24    OT pay(word)
 ;0x28    Allowance(word)
@@ -185,7 +185,7 @@ ScoreCopyLoop
         B       ScoreCopyLoop
 ScoreDone
 
-        POP     {R4-R7,PC}
+        POP    {R4-R7,PC}
 		
 		LTORG
 
@@ -200,8 +200,6 @@ Mod1_InitRecords
 		
         LDR     R0, =1001
         STR     R0, [R4, #OFF_ID]
-        LDR     R0, =Emp0Name
-        STR     R0, [R4, #OFF_NAMEPTR]
         LDR     R0, =50000
         STR     R0, [R4, #OFF_BASE]
         MOVS    R0, #0                  ;Grade A (0)
@@ -230,8 +228,6 @@ Mod1_InitRecords
         ADD     R4, R4, #EMP_SIZE
         LDR     R0, =1002
         STR     R0, [R4, #OFF_ID]
-        LDR     R0, =Emp1Name
-        STR     R0, [R4, #OFF_NAMEPTR]
         LDR     R0, =40000
         STR     R0, [R4, #OFF_BASE]
         MOVS    R0, #1                  ;Grade B
@@ -260,8 +256,6 @@ Mod1_InitRecords
         ADD     R4, R4, #EMP_SIZE
         LDR     R0, =1003
         STR     R0, [R4, #OFF_ID]
-        LDR     R0, =Emp2Name
-        STR     R0, [R4, #OFF_NAMEPTR]
         LDR     R0, =60000
         STR     R0, [R4, #OFF_BASE]
         MOVS    R0, #0                  ;Grade A
@@ -289,8 +283,6 @@ Mod1_InitRecords
         ADD     R4, R4, #EMP_SIZE
         LDR     R0, =1004
         STR     R0, [R4, #OFF_ID]
-        LDR     R0, =Emp3Name
-        STR     R0, [R4, #OFF_NAMEPTR]
         LDR     R0, =35000
         STR     R0, [R4, #OFF_BASE]
         MOVS    R0, #2                  ;Grade C
@@ -318,8 +310,6 @@ Mod1_InitRecords
         ADD     R4, R4, #EMP_SIZE
         LDR     R0, =1005
         STR     R0, [R4, #OFF_ID]
-        LDR     R0, =Emp4Name
-        STR     R0, [R4, #OFF_NAMEPTR]
         LDR     R0, =45000
         STR     R0, [R4, #OFF_BASE]
         MOVS    R0, #1                  ;Grade B
@@ -342,7 +332,7 @@ Mod1_InitRecords
         STR     R0, [R4, #OFF_TAX]
         STR     R0, [R4, #OFF_NET]
 
-        POP     {R4-R7,PC}
+        POP    {R4-R7,PC}
 		
 		LTORG
 
@@ -374,7 +364,7 @@ AttLoop
 
 AttDone
         STRB    R5, [R1, #OFF_PRESENT]
-        POP     {R4-R7,PC}
+        POP    {R4-R7,PC}
 
 
 ;MODULE 3 – Leave & Deduction(with LDEFICIT flag)
@@ -410,13 +400,14 @@ NoDed3
         STR     R3, [R5, #OFF_DED]
 
 EndDed3
-        POP     {R4-R7,PC}
+        POP    {R4-R7,PC}
 
 
 ;MODULE 4 – Overtime Calculation (OT hours at 0x20002000)
 ;Uses grade-based lookup table OT_RateTable
 ;grade: 0 = A, 1 = B, 2 = C
 ;ot_pay = ot_hours * rate
+;Multiplication overflow not possible as, max(ot_hours) × max(rate) = 255 × 250 = 63,750 < 2^32
 
 Mod4_OTCalculation
         PUSH    {R4-R7,LR}
@@ -442,7 +433,7 @@ M4_IndexOK
         MUL     R3, R0, R2
         STR     R3, [R5, #OFF_OT]
 
-        POP     {R4-R7,PC}
+        POP    {R4-R7,PC}
 
 
 ;MODULE 5 – Allowance
@@ -455,15 +446,8 @@ Mod5_Allowance
 
         LDR     R0, [R5, #OFF_BASE]     ;base salary
         MOVS    R1, #5
-        MOVS    R2, #0                  ;quotient for /5
-Div5_Loop
-        CMP     R0, R1
-        BLT     Div5_Done
-        SUBS    R0, R0, R1
-        ADDS    R2, R2, #1
-        B       Div5_Loop
-Div5_Done
-        MOV     R6, R2                  ;HRA = base/5
+        
+        UDIV    R6, R0, R1              ;HRA = base/5
 
         LDR     R7, =3000               ;medical
 
@@ -484,17 +468,18 @@ Trans_Done
         ADDS    R0, R0, R4
         STR     R0, [R5, #OFF_ALLOW]
 
-        POP     {R4-R7,PC}
+        POP    {R4-R7,PC}
 
 
 ;MODULE 6 – Tax computation (slabs)
-;gross=base+allow+ot+bonus-deduction
+;gross=base+allow+ot-deduction
 ;Slabs:
 ;= 30000              : 0%
 ;30001 – 60000        : 5%
 ;60001 – 120000       : 10%
 ;> 120000             : 15%
 ;Uses CMP + BLE, BHI, BGE
+;Multiplication overflow not possible as, max(gross) × max(rate) = 200000(approx.) × 15 = 3,000,000 < 2^32
 
 Mod6_TaxCalc
         PUSH    {R4-R7,LR}
@@ -552,28 +537,26 @@ Tax15_rate
 
 
 ;TaxCompute6: R0=gross, R4=rate(0/5/10/15)
-;Computes tax=(gross * rate)/100 using repeated subtraction.
+;Computes tax=(gross * rate)/100 using UDIV.
 ;Result in R2.
 
 TaxCompute6
         MUL     R2, R0, R4              ;R2=gross*rate
         MOVS    R6, #100
         MOVS    R7, #0
-TC_Loop
-        CMP     R2, R6
-        BLT     TC_Done
-        SUBS    R2, R2, R6
-        ADDS    R7, R7, #1
-        B       TC_Loop
-TC_Done
+		
+		UDIV 	R7, R2, R6				;R7=(gross*rate)/100
+		
         MOV     R2, R7                  ;R2=tax
 
         STR     R2, [R5, #OFF_TAX]
-        POP     {R4-R7,PC}
+        POP    {R4-R7,PC}
 
 
 ;MODULE 7 – Net salary (with OVERFLOW_FLAG)
 ;net=base+allow+ot-tax-deduction
+;Indicates signed arithmetic overflow only during net salary calculation.
+;Multiplication overflow not possible.
 
 Mod7_NetSalary
         PUSH    {R4-R7,LR}
@@ -594,29 +577,26 @@ M7_NoOF1
         BVC     M7_NoOF2
         ORR     R4, R4, #FLAG_OVERFLOW
 M7_NoOF2
+        LDR     R1, [R5, #OFF_TAX]
+        SUBS    R0, R0, R1
         BVC     M7_NoOF3
         ORR     R4, R4, #FLAG_OVERFLOW
 M7_NoOF3
-        LDR     R1, [R5, #OFF_TAX]
+        LDR     R1, [R5, #OFF_DED]
         SUBS    R0, R0, R1
         BVC     M7_NoOF4
         ORR     R4, R4, #FLAG_OVERFLOW
 M7_NoOF4
-        LDR     R1, [R5, #OFF_DED]
-        SUBS    R0, R0, R1
-        BVC     M7_NoOF5
-        ORR     R4, R4, #FLAG_OVERFLOW
-M7_NoOF5
-
         STR     R0, [R5, #OFF_NET]
         STRB    R4, [R5, #OFF_FLAGS]
 
-        POP     {R4-R7,PC}
+        POP    {R4-R7,PC}
 		
 
 ;MODULE 10 – Bonus engine
 ;Scores at 0x20006000
 ;>=90: 25%, 75-89: 15%, 60-74: 8%, else 0
+;Multiplication overflow not possible as, max(base_salary) × max(percentage) = 200000(approx.) × 25 = 5,000,000 < 2^32
 
 Mod10_Bonus
         PUSH    {R4-R7,LR}
@@ -647,19 +627,15 @@ Bcalc
         MUL     R2, R1, R3
         MOVS    R4, #100
         MOVS    R7, #0
-BdivLoop
-        CMP     R2, R4
-        BLT     BdivDone
-        SUBS    R2, R2, R4
-        ADDS    R7, R7, #1
-        B       BdivLoop
-BdivDone
+		
+		UDIV 	R7, R2, R4
+		
         MOV     R2, R7
 
 Bstore
         STR     R2, [R5, #OFF_BONUS]
 
-        POP     {R4-R7,PC}
+        POP    {R4-R7,PC}
 
 
 ;MODULE 8 – Sort employees by net salary (descending)
@@ -780,7 +756,7 @@ SumDone9
         LDR     R0, =Total_Admin
         STR     R3, [R0]
 
-        POP     {R4-R7,PC}
+        POP    {R4-R7,PC}
 
 
 ;UART helper (original): send one character (R0)
@@ -963,9 +939,22 @@ Skip_Separator
         BL      UART_SendChar
         MOVS    R0, #10
         BL      UART_SendChar
-
-        ;Final Pay=Net+Bonus
 		
+		; Check Alerts
+		LDRB    R7, [R6, #OFF_FLAGS]     
+		TST     R7, #FLAG_LDEFICIT
+		BEQ     NoLDefAlert
+		LDR     R0, =Str_Alert_LD
+		BL      UART_SendString
+
+NoLDefAlert
+		TST     R7, #FLAG_OVERFLOW       
+		BEQ     NoOFAlert
+		LDR     R0, =Str_Alert_OF
+		BL      UART_SendString
+		
+		;Final Pay=Net+Bonus
+NoOFAlert
         LDR     R0, =Str_Final
         BL      UART_SendString
         LDR     R1, [R6, #OFF_NET]
@@ -988,7 +977,7 @@ Skip_Separator
         B       Payslip_Loop
 
 Payslip_Done
-        POP     {R4-R8,PC}
+        POP    {R4-R8,PC}
 
 
 ;READONLY DATA(ROM)
@@ -996,17 +985,15 @@ Payslip_Done
         AREA    |.rodata|, DATA, READONLY
         ALIGN
 
-;Employee names(for NamePtr fields)
-Emp0Name        DCB "Alice",0
-Emp1Name        DCB "Bob",0
-Emp2Name        DCB "Charlie",0
-Emp3Name        DCB "Diana",0
-Emp4Name        DCB "Evan",0
-
-;Dummy allowance table pointer target(not actually used in code logic)
+;Dummy allowance table pointer target
 AllowTable      DCD 0,0,0
 
 ;Attendance patterns for 5 employees(ROM, 32 bytes each: 31+pad)
+;Assuming attendance data for exactly 31 days are properly available.
+;If total number of 0s and 1s <31, it takes garbage values for rest of the days.
+;If total number of 0s and 1s >31, it counts first 31 values.
+;If it is not 0 or 1, it incorrectly calculates the present days.
+
 ATT_TABLE_ROM
         ;Emp 0(31 days: mostly present, 1 absence)
         DCB 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1
@@ -1020,13 +1007,13 @@ ATT_TABLE_ROM
         ;Emp 3 (more absences early)
         DCB 0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
         DCB 0
-        ;Emp 4
+        ;Emp 4 (all present)
         DCB 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
         DCB 0
 
 ;OT rate lookup table by grade: index 0=A, 1=B, 2=C
 OT_RateTable
-        DCB     250,200,150
+        DCB    250,200,150
 		
 ;OT hours(ROM)
 OT_TABLE_ROM
@@ -1044,6 +1031,8 @@ Str_Allow       DCB "Allowance: ",0
 Str_Bonus       DCB "Bonus: ",0
 Str_Final       DCB "Final Pay: ",0
 Str_Sep         DCB "------------------------------",13,10,0
+Str_Alert_LD  	DCB "** ALERT: Leave deficit > 5 days **",13,10,0
+Str_Alert_OF  	DCB "** ALERT: Salary overflow detected **",13,10,0
 
 
 ; READWRITE DATA
