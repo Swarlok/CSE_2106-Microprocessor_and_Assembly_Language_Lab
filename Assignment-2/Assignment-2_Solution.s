@@ -200,6 +200,8 @@ Mod1_InitRecords
 		
         LDR     R0, =1001
         STR     R0, [R4, #OFF_ID]
+		LDR		R0, =Emp0Name
+		STR		R0, [R4, #OFF_NAMEPTR]
         LDR     R0, =50000
         STR     R0, [R4, #OFF_BASE]
         MOVS    R0, #0                  ;Grade A (0)
@@ -228,6 +230,8 @@ Mod1_InitRecords
         ADD     R4, R4, #EMP_SIZE
         LDR     R0, =1002
         STR     R0, [R4, #OFF_ID]
+		LDR		R0, =Emp1Name
+		STR		R0, [R4, #OFF_NAMEPTR]
         LDR     R0, =40000
         STR     R0, [R4, #OFF_BASE]
         MOVS    R0, #1                  ;Grade B
@@ -256,6 +260,8 @@ Mod1_InitRecords
         ADD     R4, R4, #EMP_SIZE
         LDR     R0, =1003
         STR     R0, [R4, #OFF_ID]
+		LDR		R0, =Emp2Name
+		STR		R0, [R4, #OFF_NAMEPTR]
         LDR     R0, =60000
         STR     R0, [R4, #OFF_BASE]
         MOVS    R0, #0                  ;Grade A
@@ -283,6 +289,8 @@ Mod1_InitRecords
         ADD     R4, R4, #EMP_SIZE
         LDR     R0, =1004
         STR     R0, [R4, #OFF_ID]
+		LDR		R0, =Emp3Name
+		STR		R0, [R4, #OFF_NAMEPTR]
         LDR     R0, =35000
         STR     R0, [R4, #OFF_BASE]
         MOVS    R0, #2                  ;Grade C
@@ -310,6 +318,8 @@ Mod1_InitRecords
         ADD     R4, R4, #EMP_SIZE
         LDR     R0, =1005
         STR     R0, [R4, #OFF_ID]
+		LDR		R0, =Emp4Name
+		STR		R0, [R4, #OFF_NAMEPTR]
         LDR     R0, =45000
         STR     R0, [R4, #OFF_BASE]
         MOVS    R0, #1                  ;Grade B
@@ -984,6 +994,13 @@ Payslip_Done
 
         AREA    |.rodata|, DATA, READONLY
         ALIGN
+
+;Employee names(for NamePtr fields)
+Emp0Name		DCB "Neymar",0
+Emp1Name		DCB "Suarez",0
+Emp2Name		DCB "Messi",0
+Emp3Name		DCB "Iniesta",0
+Emp4Name		DCB "Xavi",0
 
 ;Dummy allowance table pointer target
 AllowTable      DCD 0,0,0
