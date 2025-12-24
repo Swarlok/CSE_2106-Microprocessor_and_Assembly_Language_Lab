@@ -1,7 +1,7 @@
 # CSE 2106 - Microprocessor and Assembly Language Lab
 
 ## Assignment 2: PayrollSys-32
-ARM-based employee payroll and salary processing system for **2nd Year 1st Semester 2025, Batch 30, CSE, University of Dhaka.**
+ARM-based employee payroll and salary processing system developed by **Swarlok Samadder, Shashwata Nandi and Mohammad Mahmudul Kabir Fahmid** for **2nd Year 1st Semester 2025 course CSE 2106: Microprocessor and Assmebly Language Lab, Batch 30, Department of Computer Science and Engineering, University of Dhaka.**
 
 ## Overview
 The project implements a miniature payroll pipeline on ARM (Thumb) assembly. It loads attendance, overtime, and performance data into RAM and builds employee records. The pipeline runs payroll calculations and sorts employees by net salary. It also produces department summaries and emits a UART payslip demo.
